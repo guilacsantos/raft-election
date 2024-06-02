@@ -79,9 +79,9 @@ func (rf *Raft) GetState() (int, bool) {
 }
 
 func (rf *Raft) restartTimer() {
-	fmt.Println("Timer restarted on node ", rf.me)
-	rf.timeout.Stop()
-	rf.timeout.Reset(time.Duration(300+rand.Int31n(150)) * time.Millisecond)
+	//fmt.Println("Timer restarted on node ", rf.me)
+	//rf.timeout.Stop()
+	rf.timeout.Reset(time.Duration(300+rand.Int31n(350)) * time.Millisecond)
 	//fmt.Println("a ")
 
 }
@@ -116,40 +116,47 @@ func (rf *Raft) startElection() {
 	}
 
 	for i := 0; i < len(rf.peers); i++ {
-		if !(i == rf.me) {
+		if !(i == rf.me) && rf.state == "candidate" {
 			var peer = rf.peers[i]
 			var reply RequestVoteReply
+			fmt.Println("Candidate", rf.me, "sending request to node", i, "for vote in term", rf.currentTerm)
 			var granted = peer.Call("Raft.RequestVote", &args, &reply)
 			if granted {
 				rf.votesReceived = append(rf.votesReceived, i)
 				fmt.Println("Node", i, "voted for", rf.me, "in term", rf.currentTerm)
 			}
-		}
-	}
+			rf.checkIfWonElection()
 
-	if rf.state == "candidate" && len(rf.votesReceived) > len(rf.peers)/2 {
-		fmt.Println("Node elected leader of term", rf.currentTerm, ": ", rf.me, ", by quorum", rf.votesReceived)
-		rf.state = "leader"
-		rf.restartTimer()
-		rf.sendAppendEntries()
+		}
 	}
 }
 
+func (rf *Raft) checkIfWonElection() {
+	if rf.state == "candidate" && len(rf.votesReceived) > len(rf.peers)/2 {
+		fmt.Println("Node elected leader of term", rf.currentTerm, ": ", rf.me, ", by quorum", rf.votesReceived)
+		rf.mu.Lock()
+		rf.state = "leader"
+		rf.heartbeatTimer.Reset(259 * time.Millisecond)
+		rf.restartTimer()
+		rf.mu.Unlock()
+		rf.sendAppendEntries()
+	}
+}
 func (rf *Raft) awaitEvents() {
 	for rf.alive {
 		select {
 		case <-rf.timeout.C:
-			fmt.Println("Election timeout reached on node ", rf.me)
 			if rf.state != "leader" {
+				fmt.Println("Election timeout reached on node ", rf.me)
 				rf.startElection()
 			}
-			if rf.state != "leader" {
+			if rf.state == "leader" {
 				rf.restartTimer()
 			}
 		case <-rf.heartbeatTimer.C:
 			if rf.state == "leader" {
-				fmt.Println("Leader ending heartbeats. ", rf.me)
-				rf.heartbeatTimer = time.NewTimer(100 * time.Millisecond)
+				fmt.Println("Leader", rf.me, "of term", rf.currentTerm, "sending heartbeats... ")
+				rf.heartbeatTimer.Reset(250 * time.Millisecond)
 				rf.sendAppendEntries()
 			}
 		}
@@ -185,7 +192,7 @@ func (rf *Raft) sendAppendEntries() {
 			if peerId == rf.me {
 				return
 			}
-			fmt.Println("Node", rf.me, "appending entries on", peerId)
+			//fmt.Println("Node", rf.me, "appending entries on", peerId)
 			rf.peers[peerId].Call("Raft.AppendEntries", &args, &reply)
 		}(peer)
 	}
@@ -197,7 +204,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		fmt.Println("Error in append entries. Node: ", rf.me)
 		reply.Ok = 0
 	} else {
-		fmt.Println("AppendEntries received, election timer cancelled. Node: ", rf.me)
+		fmt.Println("Heartbeat from", args.Leader, "received on", rf.me)
 		rf.restartTimer()
 		reply.Ok = 1
 		rf.state = "follower"
@@ -232,8 +239,9 @@ type RequestVoteReply struct {
 }
 
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	fmt.Println("Vote requested from node", rf.me, "by candidate", args.NodeId, "in term", args.Term)
-
 	reply.Term = rf.currentTerm
 	reply.Granted = false
 
@@ -262,6 +270,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		}
 
 	}
+
 }
 
 // example RequestVote RPC handler.
@@ -330,7 +339,8 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 // in Kill(), but it might be convenient to (for example)
 // turn off debug output from this instance.
 func (rf *Raft) Kill() {
-	fmt.Println("Killed node ", rf.me)
+	fmt.Println("Killed", rf.state, "node", rf.me)
+	rf.alive = false
 	// Your code here, if desired.
 }
 
@@ -361,8 +371,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.termLeader = -1
 
 	//Começa timer
-	rf.timeout = time.NewTimer(time.Duration(300+rand.Int31n(150)) * time.Millisecond)
-	rf.heartbeatTimer = time.NewTimer(100 * time.Millisecond)
+	rf.timeout = time.NewTimer(time.Duration(500+rand.Int31n(350)) * time.Millisecond)
+	rf.heartbeatTimer = time.NewTimer(250 * time.Millisecond)
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
