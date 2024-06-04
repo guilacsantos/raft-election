@@ -81,7 +81,7 @@ func (rf *Raft) GetState() (int, bool) {
 func (rf *Raft) restartTimer() {
 	//fmt.Println("Timer restarted on node ", rf.me)
 	//rf.timeout.Stop()
-	rf.timeout.Reset(time.Duration(300+rand.Int31n(350)) * time.Millisecond)
+	rf.timeout.Reset(time.Duration(250+rand.Int31n(350)) * time.Millisecond)
 	//fmt.Println("a ")
 
 }
@@ -115,19 +115,23 @@ func (rf *Raft) startElection() {
 		LastLogTerm:   lastLogTerm,
 	}
 
-	for i := 0; i < len(rf.peers); i++ {
-		if !(i == rf.me) && rf.state == "candidate" {
-			var peer = rf.peers[i]
-			var reply RequestVoteReply
-			fmt.Println("Candidate", rf.me, "sending request to node", i, "for vote in term", rf.currentTerm)
-			var granted = peer.Call("Raft.RequestVote", &args, &reply)
+	for peer := 0; peer < len(rf.peers); peer++ {
+		reply := RequestVoteReply{}
+		go func(peerId int) {
+			if peerId == rf.me {
+				return
+			}
+
+			fmt.Println("Candidate", rf.me, "sending request to node", peerId, "for vote in term", rf.currentTerm)
+			rf.peers[peerId].Call("Raft.RequestVote", &args, &reply)
+
+			var granted = reply.Granted
 			if granted {
-				rf.votesReceived = append(rf.votesReceived, i)
-				fmt.Println("Node", i, "voted for", rf.me, "in term", rf.currentTerm)
+				rf.votesReceived = append(rf.votesReceived, peerId)
+				fmt.Println("Node", peerId, "voted for", rf.me, "in term", rf.currentTerm)
 			}
 			rf.checkIfWonElection()
-
-		}
+		}(peer)
 	}
 }
 
@@ -136,7 +140,7 @@ func (rf *Raft) checkIfWonElection() {
 		fmt.Println("Node elected leader of term", rf.currentTerm, ": ", rf.me, ", by quorum", rf.votesReceived)
 		rf.mu.Lock()
 		rf.state = "leader"
-		rf.heartbeatTimer.Reset(259 * time.Millisecond)
+		rf.heartbeatTimer.Reset(120 * time.Millisecond)
 		rf.restartTimer()
 		rf.mu.Unlock()
 		rf.sendAppendEntries()
@@ -156,7 +160,7 @@ func (rf *Raft) awaitEvents() {
 		case <-rf.heartbeatTimer.C:
 			if rf.state == "leader" {
 				fmt.Println("Leader", rf.me, "of term", rf.currentTerm, "sending heartbeats... ")
-				rf.heartbeatTimer.Reset(250 * time.Millisecond)
+				rf.heartbeatTimer.Reset(125 * time.Millisecond)
 				rf.sendAppendEntries()
 			}
 		}
@@ -201,7 +205,6 @@ func (rf *Raft) sendAppendEntries() {
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	reply.Term = rf.currentTerm
 	if args.Term < rf.currentTerm {
-		fmt.Println("Error in append entries. Node: ", rf.me)
 		reply.Ok = 0
 	} else {
 		fmt.Println("Heartbeat from", args.Leader, "received on", rf.me)
@@ -384,3 +387,4 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	return rf
 }
+
